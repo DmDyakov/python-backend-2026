@@ -1,29 +1,29 @@
-from __future__ import annotations
-
 from http import HTTPStatus
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from sqlalchemy.orm import Session
 
-from shop_api import store
+from shop_api import crud
 from shop_api.contracts import (
     CartCreatedResponse,
     CartItemResponse,
     CartResponse,
 )
+from shop_api.database import get_session
 
 router = APIRouter(prefix="/cart", tags=["cart"])
 
 
-def _build_cart_response(cart_id: int) -> CartResponse:
-    contents = store.get_cart_contents(cart_id)
+def _build_cart_response(session: Session, cart_id: int) -> CartResponse:
+    contents = crud.get_cart_contents(session, cart_id)
     assert contents is not None
 
     cart_items: list[CartItemResponse] = []
     total = 0.0
 
     for item_id, quantity in contents.items():
-        item = store.get_item(item_id)
+        item = crud.get_item(session, item_id)
         assert item is not None
 
         cart_items.append(
@@ -40,8 +40,11 @@ def _build_cart_response(cart_id: int) -> CartResponse:
 
 
 @router.post("", status_code=HTTPStatus.CREATED)
-def create_cart(response: Response) -> CartCreatedResponse:
-    cart_id = store.create_cart()
+def create_cart(
+    response: Response,
+    session: Session = Depends(get_session),
+) -> CartCreatedResponse:
+    cart_id = crud.create_cart(session)
     response.headers["location"] = f"/cart/{cart_id}"
     return CartCreatedResponse(id=cart_id)
 
@@ -54,28 +57,36 @@ def list_carts(
     max_price: Annotated[float | None, Query(ge=0)] = None,
     min_quantity: Annotated[int | None, Query(ge=0)] = None,
     max_quantity: Annotated[int | None, Query(ge=0)] = None,
+    session: Session = Depends(get_session),
 ) -> list[CartResponse]:
-    cart_ids = store.list_carts(
-        offset, limit, min_price, max_price, min_quantity, max_quantity
+    cart_ids = crud.list_carts(
+        session, offset, limit, min_price, max_price, min_quantity, max_quantity
     )
-    return [_build_cart_response(cid) for cid in cart_ids]
+    return [_build_cart_response(session, cid) for cid in cart_ids]
 
 
 @router.get("/{cart_id}")
-def get_cart(cart_id: int) -> CartResponse:
-    if store.get_cart_contents(cart_id) is None:
+def get_cart(
+    cart_id: int,
+    session: Session = Depends(get_session),
+) -> CartResponse:
+    if crud.get_cart_contents(session, cart_id) is None:
         raise HTTPException(HTTPStatus.NOT_FOUND, f"Cart {cart_id} not found")
-    return _build_cart_response(cart_id)
+    return _build_cart_response(session, cart_id)
 
 
 @router.post("/{cart_id}/add/{item_id}")
-def add_item(cart_id: int, item_id: int) -> CartResponse:
-    if store.get_cart_contents(cart_id) is None:
+def add_item(
+    cart_id: int,
+    item_id: int,
+    session: Session = Depends(get_session),
+) -> CartResponse:
+    if crud.get_cart_contents(session, cart_id) is None:
         raise HTTPException(HTTPStatus.NOT_FOUND, f"Cart {cart_id} not found")
 
-    item = store.get_item(item_id)
+    item = crud.get_item(session, item_id)
     if item is None or item["deleted"]:
         raise HTTPException(HTTPStatus.NOT_FOUND, f"Item {item_id} not found")
 
-    store.add_item_to_cart(cart_id, item_id)
-    return _build_cart_response(cart_id)
+    crud.add_item_to_cart(session, cart_id, item_id)
+    return _build_cart_response(session, cart_id)
